@@ -1,0 +1,320 @@
+const predef = require("./tools/predef");
+const meta = require("./tools/meta");
+const EMA = require("./tools/EMA");
+const SMA = require("./tools/SMA");
+const WMA = require("./tools/WMA");
+const MMA = require('./tools/MMA');
+const HMA = require('./HMA');
+const p = require("./tools/plotting");
+
+const ma = {
+    simple: SMA,
+    exponential: EMA,
+    weighted: WMA,
+    modified: MMA,
+    hull: HMA
+};
+
+class atrTrailStop_wTargets {
+    init() {
+        this.smaMA = SMA(this.props.atrPeriod);
+        this.atrMA = ma[this.props.movingAverageType](this.props.atrPeriod);
+        this.trailStop = null;
+        this.fib1 = null;
+        this.fib2 = null;
+        this.fib3 = null;
+        this.trend = null;
+        this.trendUp = null;
+        this.trendDown = null;
+        this.ex = null;
+        this.currClose = undefined;
+        this.currHigh = undefined;
+        this.currLow = undefined;
+        this.switchVal = null;
+        this.diff = null;
+        
+    }
+
+    map(d, i, history) {
+        // Initialize Variables
+        const prevd =  i > 0 ? history.prior() : d;
+        const prevClose = prevd.close();
+        const prevHigh = prevd.high();
+        const prevLow = prevd.low();
+        
+        const currClose = d.close();
+        const currHigh = d.high();
+        const currLow = d.low();
+
+        // True Range Calculations
+        const HiLo = Math.min((currHigh - currLow), 1.5 * this.smaMA(currHigh - currLow));
+        const HRef = currLow <= prevHigh ? currHigh - prevClose : (currHigh - prevClose) - 0.5 * (currLow - prevHigh);
+        const LRef = currHigh >= prevLow ? prevClose - currLow : (prevClose - currLow) - 0.5 * (prevLow - currHigh);
+        const trueRange = this.props.trailType == "modified" ? Math.max(HiLo, Math.max(HRef, LRef)) : Math.max(currHigh - currLow, Math.max(Math.abs(currHigh - prevClose), Math.abs(currLow - prevClose)));
+        
+        // Trend Logic
+        const loss = this.props.ATRFactor * this.atrMA(trueRange);
+        const up = currClose - loss;
+        const down = currClose + loss;
+        
+        const prevTrend = this.trend;        
+        const prevTrendUp = this.trendUp;
+        const prevTrendDown = this.trendDown;
+        
+        this.trendUp = prevClose > prevTrendUp ? Math.max(up, prevTrendUp) : up;
+        this.trendDown = prevClose < prevTrendDown ? Math.min(down, prevTrendDown) : down;
+        this.trend = currClose > prevTrendDown ? 1 : currClose < prevTrendUp ? -1 : prevTrend;
+
+        this.trailStop = this.trend == 1 ? this.trendUp : this.trendDown;
+        
+        // Extremum Logic
+        const prevEx = this.ex;
+        this.ex = (this.trend > 0 && prevTrend < 0) ? currHigh : (this.trend < 0 && prevTrend > 0) ? currLow : this.trend == 1 ? Math.max(prevEx, currHigh) : this.trend == -1 ? Math.min(prevEx, currLow) : prevEx;
+        
+        // Fibonacci Level Logic
+        this.fib1 = this.ex + (this.trailStop - this.ex) * this.props.Fib1Level / 100;
+        this.fib2 = this.ex + (this.trailStop - this.ex) * this.props.Fib2Level / 100;
+        this.fib3 = this.ex + (this.trailStop - this.ex) * this.props.Fib3Level / 100;
+        const l100 = this.trailStop + 0;
+        
+        // Fib Targets 
+        const prevSwitchVal = this.switchVal;
+        const prevDiff = this.diff;
+        const trendChange = this.trend == prevTrend ? false : true;
+        this.switchVal = trendChange ? this.trailStop : prevSwitchVal;
+        this.diff = trendChange ? d.close() - this.switchVal : prevDiff;
+        
+        let fibTgt1 = this.switchVal + (this.diff * 1.618);
+        let fibTgt2 = this.switchVal + (this.diff * 2.618);
+        let fibTgt3 = this.switchVal + (this.diff * 4.23);
+        
+        return {
+            trend: this.trend,
+            trendUp: this.trendUp,
+            trendDown: this.trendDown,
+            ex: this.ex,
+            fib1: this.fib1,
+            fib2: this.fib2,
+            fib3: this.fib3,
+            l100: l100,
+            trailStop: this.trailStop,
+            switchVal: this.switchVal,
+            diff: this.diff,
+            fibTgt1,
+            fibTgt2,
+            fibTgt3,
+            trendChange,
+        };
+    }
+}
+
+function drawATR_TrailStop(canvas, indicatorInstance, history) {
+    let item1;
+    
+    for(let i=0; i<history.data.length; ++i) {
+        const item = history.get(i);
+        
+        if (i > 0 && item.trend !== undefined && item.trailStop !== undefined && item.fib1 !== undefined && item.fib2 !== undefined && item.fib3 !== undefined && item.l100 !== undefined) {    
+            const x = p.x.get(item);
+            const x1 = p.x.get(item1);
+            
+            canvas.drawLine(
+                p.offset(x1, item1.trailStop),
+                p.offset(x, item.trailStop),
+                {
+                    color: item.trend == 1 ? "Green" : item.trend == -1 ? "Red" : "White",
+                    relativeWidth: 0.5,
+                    opacity: indicatorInstance.props.lineOpacity / 100,
+                });    
+        }
+        
+        item1 = item;
+    }
+}
+
+function colorATR_TrailStop(canvas, indicatorInstance, history) {
+    for(let i=0; i<history.data.length; ++i) {
+        const item = history.get(i);
+        
+        if (item.trend !== undefined && item.trailStop !== undefined && item.fib1 !== undefined && item.fib2 !== undefined && item.fib3 !== undefined && item.l100 !== undefined) {
+            if (indicatorInstance.props.colorZones){
+                const x = p.x.get(item);
+                canvas.drawLine(
+                    p.offset(x, item.fib1),
+                    p.offset(x, item.fib2),
+                    {
+                        color: item.trend == 1 ? "LightGreen" : item.trend == -1 ? "Salmon" : "White",
+                        relativeWidth: 1.0,
+                        opacity: indicatorInstance.props.fillOpacity / 100,
+                    }
+                );
+                canvas.drawLine(
+                    p.offset(x, item.fib2),
+                    p.offset(x, item.fib3),
+                    {
+                        color: item.trend == 1 ? "Green" : item.trend == -1 ? "Red" : "White",
+                        relativeWidth: 1.0,
+                        opacity: indicatorInstance.props.fillOpacity / 100,
+                    }
+                );
+                canvas.drawLine(
+                    p.offset(x, item.fib3),
+                    p.offset(x, item.l100),
+                    {
+                        color: item.trend == 1 ? "DarkGreen" : item.trend == -1 ? "DarkRed" : "White",
+                        relativeWidth: 1.0,
+                        opacity: indicatorInstance.props.fillOpacity / 100,
+                    }
+                );
+            }
+        }
+    }
+}
+
+function drawFibTargets(canvas, indicatorInstance, history) {
+    let item1;
+
+    for(let i=0; i<history.data.length; ++i) {
+        const item = history.get(i);
+        
+        if (i > 0 && item.trend !== undefined && item.trailStop !== undefined && item.fib1 !== undefined && item.fib2 !== undefined && item.fib3 !== undefined && item.l100 !== undefined) {    
+            if (indicatorInstance.props.showFibTargets){
+                const x = p.x.get(item);
+                const x1 = p.x.get(item1);
+
+                if (((item.trend == 1 && item.fibTgt1 > item.trailStop) || (item.trend == -1 && item.fibTgt1 < item.trailStop)) && item.trendChange === false) {
+                    canvas.drawLine(
+                        p.offset(x1, item1.fibTgt1),
+                        p.offset(x, item.fibTgt1),
+                        {
+                            color: item.trend == 1 ? "Red" : item.trend == -1 ? "Green" : "White",
+                            relativeWidth: 0.4,
+                            opacity: indicatorInstance.props.lineOpacity / 100,
+                        });
+                }
+                if (((item.trend == 1 && item.fibTgt2 > item.trailStop) || (item.trend == -1 && item.fibTgt2 < item.trailStop)) && item.trendChange === false) {
+                    canvas.drawLine(
+                        p.offset(x1, item1.fibTgt2),
+                        p.offset(x, item.fibTgt2),
+                        {
+                            color: item.trend == 1 ? "Red" : item.trend == -1 ? "Green" : "White",
+                            relativeWidth: 0.4,
+                            opacity: indicatorInstance.props.lineOpacity / 100,
+                        });
+                }
+                if (((item.trend == 1 && item.fibTgt3 > item.trailStop) || (item.trend == -1 && item.fibTgt3 < item.trailStop)) && item.trendChange === false) {
+                    canvas.drawLine(
+                        p.offset(x1, item1.fibTgt3),
+                        p.offset(x, item.fibTgt3),
+                        {
+                            color: item.trend == 1 ? "Red" : item.trend == -1 ? "Green" : "White",
+                            relativeWidth: 0.4,
+                            opacity: indicatorInstance.props.lineOpacity / 100,
+                        });
+                }
+                if (item1.trendChange === true) {
+                    //canvas.drawText("TEST", p.offset(x, item.fibTgt1),{color: "White",}),
+                    canvas.drawLine(
+                        p.offset(x1, item1.fibTgt1),
+                        p.offset(x, item.fibTgt1),
+                        {
+                            color: item.trend == 1 ? "Red" : item.trend == -1 ? "Green" : "White",
+                            relativeWidth: 1,
+                            opacity: indicatorInstance.props.lineOpacity / 100,
+                        });
+                    canvas.drawLine(
+                        p.offset(x1, item1.fibTgt2),
+                        p.offset(x, item.fibTgt2),
+                        {
+                            color: item.trend == 1 ? "Red" : item.trend == -1 ? "Green" : "White",
+                            relativeWidth: 1,
+                            opacity: indicatorInstance.props.lineOpacity / 100,
+                        });
+                    canvas.drawLine(
+                        p.offset(x1, item1.fibTgt3),
+                        p.offset(x, item.fibTgt3),
+                        {
+                            color: item.trend == 1 ? "Red" : item.trend == -1 ? "Green" : "White",
+                            relativeWidth: 1,
+                            opacity: indicatorInstance.props.lineOpacity / 100,
+                        });
+                }
+            }    
+        }
+        
+        item1 = item;
+    }
+}
+
+module.exports = {
+    name: "atrTrailStop_wTargets",
+    description: "ATR TrailStop w/Fib Targets",
+    calculator: atrTrailStop_wTargets,
+    params: {
+        trailType: predef.paramSpecs.enum({
+            modified: "Modified",
+            unmodified: "Unmodified",
+        }, "modified"),
+        movingAverageType: predef.paramSpecs.enum({
+            simple: "Simple",
+            exponential: "Exponential",
+            hull: "Hull",
+            modified: "Wilder's",
+            weighted: "Weighted",
+        }, "modified"),
+        atrPeriod: predef.paramSpecs.period(5),
+        ATRFactor: predef.paramSpecs.number(3.5, 0.1),
+        Fib1Level: predef.paramSpecs.number(61.8, 0.1),
+        Fib2Level: predef.paramSpecs.number(78.6, 0.1),
+        Fib3Level: predef.paramSpecs.number(88.6, 0.1),
+        colorZones: {
+            type: "boolean",
+            def: false,
+        },
+        showFibTargets: {
+            type: "boolean",
+            def: true,
+        },
+        lineOpacity: predef.paramSpecs.percent(65, 1, 1, 100),
+        fillOpacity: predef.paramSpecs.percent(30, 1, 1, 100),
+    },
+    inputType: meta.InputType.BARS,
+    plots: {
+        trailStop: {title: "TrailStop"},
+        fib1: {title: "Fib1"},
+        fib2: {title: "Fib2"},
+        fib3: {title: "Fib3"},
+        fibTgt1: {title: "Target 1"},
+        fibTgt2: {title: "Target 2"},
+        fibTgt3: {title: "Target 3"},
+    },
+    plotter: [
+        predef.plotters.custom(colorATR_TrailStop),
+        predef.plotters.custom(drawATR_TrailStop),
+        predef.plotters.singleline("fib1"),
+        predef.plotters.singleline("fib2"),
+        predef.plotters.singleline("fib3"),
+        predef.plotters.custom(drawFibTargets),
+    ],
+    tags: [predef.tags.Volatility],
+    schemeStyles: {
+        dark: {
+            fib1: {color: "white", lineWidth: 1, lineStyle: 1, opacity: 65},
+            fib2: {color: "white", lineWidth: 1, lineStyle: 1, opacity: 65},
+            fib3: {color: "white", lineWidth: 2, lineStyle: 1, opacity: 65},
+            trailStop: {color: "red"},
+            fibTgt1: {color: "magenta"},
+            fibTgt2: {color: "magenta"},
+            fibTgt3: {color: "magenta"},
+        },
+        light: {
+            fib1: {color: "gray", lineWidth: 1, lineStyle: 1, opacity: 65},
+            fib2: {color: "gray", lineWidth: 1, lineStyle: 1, opacity: 65},
+            fib3: {color: "gray", lineWidth: 2, lineStyle: 1, opacity: 65},
+            trailStop: {color: "red"},
+            fibTgt1: {color: "magenta"},
+            fibTgt2: {color: "magenta"},
+            fibTgt3: {color: "magenta"},
+        }
+    }
+};
